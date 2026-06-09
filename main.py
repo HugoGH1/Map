@@ -38,15 +38,17 @@ COLOR_BOTON_PELIGRO_HOVER = (192, 57, 43)
 
 pygame.init()
 pantalla = pygame.display.set_mode((ANCHO, ALTO))
-pygame.display.set_caption("Proyecto IA: 2 Alternativas de Ruta Inteligente + Simulación")
+pygame.display.set_caption("Proyecto IA: A* vs Dijkstra + Simulación Animada")
 fuente = pygame.font.SysFont("Arial", 13)
 fuente_negrita = pygame.font.SysFont("Arial", 14, bold=True)
 
 # --- CONFIGURACIÓN DE LOS BOTONES ---
-rect_btn_anim = pygame.Rect(755, 380, 160, 35)
-rect_btn_limpiar = pygame.Rect(755, 430, 160, 35)
-rect_btn_random = pygame.Rect(755, 480, 160, 35)
-rect_btn_reset = pygame.Rect(755, 530, 160, 35)
+rect_btn_algo = pygame.Rect(755, 405, 160, 28)
+rect_btn_exploracion = pygame.Rect(755, 443, 160, 28)
+rect_btn_anim = pygame.Rect(755, 481, 160, 28)
+rect_btn_limpiar = pygame.Rect(755, 519, 160, 28)
+rect_btn_random = pygame.Rect(755, 557, 160, 28)
+rect_btn_reset = pygame.Rect(755, 595, 160, 28)
 
 # --- CLASE VEHÍCULO PARA LA SIMULACIÓN ---
 class Vehiculo:
@@ -137,12 +139,23 @@ camino_ruta2 = []
 tiempo_ruta1 = 0
 tiempo_ruta2 = 0
 
+# Configuración del algoritmo activo
+algoritmo_activo = "A*"
+nodos_a_estrella = 0
+nodos_dijkstra = 0
+arbol_exploracion = []
+ver_exploracion = True
+
+# Estado de la animación de búsqueda
+animando_busqueda = False
+progreso_animacion = 0.0
+
 # Vehículos para la animación
 vehiculo1 = Vehiculo(COLOR_RUTA1, [])
 vehiculo2 = Vehiculo(COLOR_RUTA2, [])
 
 def inicializar_estructuras():
-    global grafo, manzanas_incidencias, nodo_inicio, nodo_fin, camino_ruta1, camino_ruta2, tiempo_ruta1, tiempo_ruta2
+    global grafo, manzanas_incidencias, nodo_inicio, nodo_fin, camino_ruta1, camino_ruta2, tiempo_ruta1, tiempo_ruta2, algoritmo_activo, nodos_a_estrella, nodos_dijkstra, arbol_exploracion, ver_exploracion, animando_busqueda, progreso_animacion
     grafo = {}
     manzanas_incidencias = {}
     nodo_inicio = None
@@ -151,6 +164,13 @@ def inicializar_estructuras():
     camino_ruta2 = []
     tiempo_ruta1 = 0
     tiempo_ruta2 = 0
+    algoritmo_activo = "A*"
+    nodos_a_estrella = 0
+    nodos_dijkstra = 0
+    arbol_exploracion = []
+    ver_exploracion = True
+    animando_busqueda = False
+    progreso_animacion = 0.0
     
     for x in range(NODOS_LINEA):
         for y in range(NODOS_LINEA):
@@ -216,22 +236,34 @@ def calcular_peso_tramo(x1, y1, x2, y2):
         
     return 1.0        # Tiempo normal = 1 minuto [cite: 12]
 
-# --- 🧠 ALGORITMO INTELIGENTE A* (A-ESTRELLA) ---
+# --- 🧠 ALGORITMO INTEGRAL PATHFINDING (A* / DIJKSTRA) ---
 def heuristica(a, b):
     # Distancia Manhattan (ideal para calles cuadradas tipo cuadrículas)
     return abs(a[0] - b[0]) + abs(a[1] - b[1])
 
-def algoritmo_a_estrella(inicio, fin, aristas_penalizadas=None):
-    """Encuentra la ruta óptima considerando costos dinámicos y penalizaciones externas"""
+def algoritmo_pathfinding(inicio, fin, usar_heuristica=True, aristas_penalizadas=None):
+    """Encuentra la ruta óptima considerando costos dinámicos, penalizaciones, heurística y devuelve árbol de exploración"""
     if aristas_penalizadas is None:
         aristas_penalizadas = set()
         
     queue = [(0, inicio)]
     costos = {inicio: 0}
     padres = {inicio: None}
+    nodos_evaluados = 0
+    visitados = set()
+    arbol_busqueda = []
     
     while queue:
         costo_actual, actual = heapq.heappop(queue)
+        
+        if actual in visitados:
+            continue
+        visitados.add(actual)
+        nodos_evaluados += 1
+        
+        # Guardar arista que llevó a este nodo para visualizar exploración
+        if padres[actual] is not None:
+            arbol_busqueda.append((padres[actual], actual))
         
         if actual == fin:
             # Reconstruir el camino de fin a inicio
@@ -240,40 +272,54 @@ def algoritmo_a_estrella(inicio, fin, aristas_penalizadas=None):
             while curr is not None:
                 camino.append(curr)
                 curr = padres[curr]
-            return camino[::-1], costos[fin]
+            return camino[::-1], costos[fin], nodos_evaluados, arbol_busqueda
             
         for vecino, peso in grafo.get(actual, []):
-            # Si esta cuadra fue bloqueada por incidencia, el algoritmo la ignora [cite: 7]
             if peso >= 999.0:
                 continue
                 
-            # Si es la segunda opción, castigamos los tramos que tomó la primera ruta 
             costo_tramo = peso
             if (actual, vecino) in aristas_penalizadas:
-                costo_tramo += 15.0  # Penalización alta para forzar una alternativa real 
+                costo_tramo += 15.0  # Penalización para forzar alternativa
                 
             nuevo_costo = costos[actual] + costo_tramo
             
             if vecino not in costos or nuevo_costo < costos[vecino]:
                 costos[vecino] = nuevo_costo
-                prioridad = nuevo_costo + heuristica(vecino, fin)
+                h_val = heuristica(vecino, fin) if usar_heuristica else 0
+                prioridad = nuevo_costo + h_val
                 padres[vecino] = actual
                 heapq.heappush(queue, (prioridad, vecino))
                 
-    return [], 0
+    return [], 0, nodos_evaluados, arbol_busqueda
 
 def calcular_ambas_rutas():
-    """Calcula la mejor ruta y la alternativa basándose en la petición del profe """
-    global camino_ruta1, camino_ruta2, tiempo_ruta1, tiempo_ruta2
+    """Calcula la mejor ruta y la alternativa basándose en la configuración activa"""
+    global camino_ruta1, camino_ruta2, tiempo_ruta1, tiempo_ruta2, nodos_a_estrella, nodos_dijkstra, arbol_exploracion, animando_busqueda, progreso_animacion
     if not nodo_inicio or not nodo_fin:
         camino_ruta1, camino_ruta2 = [], []
         tiempo_ruta1, tiempo_ruta2 = 0, 0
+        nodos_a_estrella, nodos_dijkstra = 0, 0
+        arbol_exploracion = []
+        animando_busqueda = False
+        progreso_animacion = 0.0
         vehiculo1.reiniciar([])
         vehiculo2.reiniciar([])
         return
         
-    # 1. Obtener la Primera Opción (La más óptima) 
-    camino_ruta1, tiempo_ruta1 = algoritmo_a_estrella(nodo_inicio, nodo_fin)
+    usar_h = (algoritmo_activo == "A*")
+    
+    # 1. Obtener la Primera Opción (La más óptima)
+    camino_ruta1, tiempo_ruta1, nodos_eval_ruta1, arbol_ruta1 = algoritmo_pathfinding(nodo_inicio, nodo_fin, usar_heuristica=usar_h)
+    arbol_exploracion = arbol_ruta1
+    
+    # Calcular comparativas del número de nodos evaluados para la misma ruta óptima
+    if usar_h:
+        nodos_a_estrella = nodos_eval_ruta1
+        _, _, nodos_dijkstra, _ = algoritmo_pathfinding(nodo_inicio, nodo_fin, usar_heuristica=False)
+    else:
+        nodos_dijkstra = nodos_eval_ruta1
+        _, _, nodos_a_estrella, _ = algoritmo_pathfinding(nodo_inicio, nodo_fin, usar_heuristica=True)
     
     # 2. Generar la Segunda Opción (Ruta Alternativa) 
     if camino_ruta1:
@@ -281,8 +327,8 @@ def calcular_ambas_rutas():
         for i in range(len(camino_ruta1) - 1):
             tramos_utilizados.add((camino_ruta1[i], camino_ruta1[i+1]))
             
-        # Corremos A* penalizando los tramos de la primera ruta 
-        camino_ruta2, tiempo_total_penalizado = algoritmo_a_estrella(nodo_inicio, nodo_fin, tramos_utilizados)
+        # Corremos la búsqueda penalizando los tramos de la primera ruta 
+        camino_ruta2, tiempo_total_penalizado, _, _ = algoritmo_pathfinding(nodo_inicio, nodo_fin, usar_heuristica=usar_h, aristas_penalizadas=tramos_utilizados)
         
         # Calcular el tiempo real de la Ruta 2 (sin la penalización artificial) [cite: 12]
         if camino_ruta2:
@@ -298,9 +344,11 @@ def calcular_ambas_rutas():
     else:
         camino_ruta2, tiempo_ruta2 = [], 0
 
-    # Reiniciar vehículos con las nuevas rutas
-    vehiculo1.reiniciar(camino_ruta1)
-    vehiculo2.reiniciar(camino_ruta2)
+    # Iniciar la animación de la búsqueda paso a paso
+    animando_busqueda = True
+    progreso_animacion = 0.0
+    vehiculo1.reiniciar([])
+    vehiculo2.reiniciar([])
 
 # --- AUXILIARES COORDENADAS ---
 def obtener_coordenadas_pixel(x, y):
@@ -385,30 +433,53 @@ def dibujar_sistema():
             elif y1 < y2: pygame.draw.polygon(pantalla, color_fl, [(mx_f, my_f+5), (mx_f-3, my_f-4), (mx_f+3, my_f-4)])
             elif y1 > y2: pygame.draw.polygon(pantalla, color_fl, [(mx_f, my_f-5), (mx_f-3, my_f+4), (mx_f+3, my_f+4)])
 
-    # 3. PINTAR LAS DOS OPCIONES DE RECORRIDO (Líneas gruesas superpuestas) 
-    # Dibujar la Opción 2 primero (Azul) 
-    if len(camino_ruta2) > 1:
-        for i in range(len(camino_ruta2) - 1):
-            xa, ya = obtener_coordenadas_pixel(camino_ruta2[i][0], camino_ruta2[i][1])
-            xb, yb = obtener_coordenadas_pixel(camino_ruta2[i+1][0], camino_ruta2[i+1][1])
-            pygame.draw.line(pantalla, COLOR_RUTA2, (xa+2, ya+2), (xb+2, yb+2), 5)
+    # 2.5 Dibujar Árbol de Exploración (animado o estático)
+    limite = len(arbol_exploracion)
+    if animando_busqueda:
+        limite = min(int(progreso_animacion), len(arbol_exploracion))
+        color_arbol = (155, 89, 182) if algoritmo_activo == "Dijkstra" else (241, 196, 15)  # Morado o Amarillo brillante
+        grosor = 3
+        radio = 5
+    else:
+        # Se dibuja en un color gris suave una vez completado para no entorpecer la ruta final
+        limite = len(arbol_exploracion)
+        color_arbol = (205, 210, 215)
+        grosor = 1
+        radio = 3
 
-    # Dibujar la Opción 1 (Verde) 
-    if len(camino_ruta1) > 1:
-        for i in range(len(camino_ruta1) - 1):
-            xa, ya = obtener_coordenadas_pixel(camino_ruta1[i][0], camino_ruta1[i][1])
-            xb, yb = obtener_coordenadas_pixel(camino_ruta1[i+1][0], camino_ruta1[i+1][1])
-            pygame.draw.line(pantalla, COLOR_RUTA1, (xa-2, ya-2), (xb-2, yb-2), 5)
+    if ver_exploracion and arbol_exploracion:
+        for i in range(limite):
+            u, v = arbol_exploracion[i]
+            x1, y1 = obtener_coordenadas_pixel(u[0], u[1])
+            x2, y2 = obtener_coordenadas_pixel(v[0], v[1])
+            pygame.draw.line(pantalla, color_arbol, (x1, y1), (x2, y2), grosor)
+            pygame.draw.circle(pantalla, color_arbol, (x2, y2), radio)
+
+    # 3. PINTAR LAS DOS OPCIONES DE RECORRIDO (solo cuando la animación de búsqueda ha concluido)
+    if not animando_busqueda:
+        # Dibujar la Opción 2 primero (Azul) 
+        if len(camino_ruta2) > 1:
+            for i in range(len(camino_ruta2) - 1):
+                xa, ya = obtener_coordenadas_pixel(camino_ruta2[i][0], camino_ruta2[i][1])
+                xb, yb = obtener_coordenadas_pixel(camino_ruta2[i+1][0], camino_ruta2[i+1][1])
+                pygame.draw.line(pantalla, COLOR_RUTA2, (xa+2, ya+2), (xb+2, yb+2), 5)
+
+        # Dibujar la Opción 1 (Verde) 
+        if len(camino_ruta1) > 1:
+            for i in range(len(camino_ruta1) - 1):
+                xa, ya = obtener_coordenadas_pixel(camino_ruta1[i][0], camino_ruta1[i][1])
+                xb, yb = obtener_coordenadas_pixel(camino_ruta1[i+1][0], camino_ruta1[i+1][1])
+                pygame.draw.line(pantalla, COLOR_RUTA1, (xa-2, ya-2), (xb-2, yb-2), 5)
+
+        # 4.5 Dibujar Vehículos Animados
+        vehiculo1.dibujar(pantalla)
+        vehiculo2.dibujar(pantalla)
 
     # 4. Dibujar Esquinas (Nodos)
     for x in range(NODOS_LINEA):
         for y in range(NODOS_LINEA):
             px, py = obtener_coordenadas_pixel(x, y)
             pygame.draw.circle(pantalla, (44, 62, 80), (px, py), 4)
-
-    # 4.5 Dibujar Vehículos Animados
-    vehiculo1.dibujar(pantalla)
-    vehiculo2.dibujar(pantalla)
 
     # Marcar visualmente los marcadores de Inicio y Fin 
     if nodo_inicio:
@@ -479,14 +550,24 @@ def dibujar_sistema():
             txt_comp = fuente.render("-", True, COLOR_TEXTO)
     else:
         txt_comp = fuente.render("N/A", True, COLOR_TEXTO)
-    pantalla.blit(txt_comp, (755, 315))
+    pantalla.blit(txt_comp, (755, 312))
+    
+    # Comparativa de rendimiento (nodos evaluados)
+    txt_nodos_a = fuente.render(f"Nodos A*: {nodos_a_estrella}", True, COLOR_TEXTO)
+    txt_nodos_d = fuente.render(f"Nodos Dijkstra: {nodos_dijkstra}", True, COLOR_TEXTO)
+    pantalla.blit(txt_nodos_a, (755, 332))
+    pantalla.blit(txt_nodos_d, (755, 349))
     
     # Separador Acciones
-    pygame.draw.line(pantalla, COLOR_BORDE_PANEL, (750, 345), (920, 345), 1)
+    pygame.draw.line(pantalla, COLOR_BORDE_PANEL, (750, 375), (920, 375), 1)
     lbl_acciones = fuente_negrita.render("ACCIONES", True, COLOR_TEXTO)
-    pantalla.blit(lbl_acciones, (755, 355))
+    pantalla.blit(lbl_acciones, (755, 385))
     
     # Dibujar los Botones
+    texto_algo = f"Modo: {algoritmo_activo}"
+    texto_exp = f"Ver Expl: {'SÍ' if ver_exploracion else 'NO'}"
+    dibujar_boton(pantalla, rect_btn_algo, texto_algo, COLOR_BOTON_NORMAL, COLOR_BOTON_HOVER, pos_raton)
+    dibujar_boton(pantalla, rect_btn_exploracion, texto_exp, COLOR_BOTON_NORMAL, COLOR_BOTON_HOVER, pos_raton)
     dibujar_boton(pantalla, rect_btn_anim, "▶ Simular", COLOR_BOTON_ACCION, COLOR_BOTON_ACCION_HOVER, pos_raton)
     dibujar_boton(pantalla, rect_btn_limpiar, "Limpiar Mapa", COLOR_BOTON_NORMAL, COLOR_BOTON_HOVER, pos_raton)
     dibujar_boton(pantalla, rect_btn_random, "Incidencias Rnd", COLOR_BOTON_NORMAL, COLOR_BOTON_HOVER, pos_raton)
@@ -512,9 +593,20 @@ while ejecutando:
     # dt es la cantidad de segundos transcurridos desde el último frame
     dt = clock.tick(60) / 1000.0
     
-    # Actualizar posiciones de los vehículos
-    vehiculo1.actualizar(dt)
-    vehiculo2.actualizar(dt)
+    # Actualizar la animación de exploración si está activa
+    if animando_busqueda:
+        # Velocidad de dibujo: 45 aristas por segundo
+        progreso_animacion += dt * 45.0
+        if progreso_animacion >= len(arbol_exploracion):
+            animando_busqueda = False
+            progreso_animacion = len(arbol_exploracion)
+            # Iniciar vehículos una vez la búsqueda ha terminado
+            vehiculo1.reiniciar(camino_ruta1)
+            vehiculo2.reiniciar(camino_ruta2)
+    else:
+        # Actualizar posiciones de los vehículos
+        vehiculo1.actualizar(dt)
+        vehiculo2.actualizar(dt)
     
     for evento in pygame.event.get():
         if evento.type == pygame.QUIT:
@@ -526,9 +618,21 @@ while ejecutando:
             # --- CLIC IZQUIERDO: CONFIGURAR INCIDENCIAS O PULSAR BOTONES ---
             if evento.button == 1: 
                 # Comprobar clics en botones de la barra lateral primero
-                if rect_btn_anim.collidepoint(pos_raton):
-                    vehiculo1.reiniciar(camino_ruta1)
-                    vehiculo2.reiniciar(camino_ruta2)
+                if rect_btn_algo.collidepoint(pos_raton):
+                    if algoritmo_activo == "A*":
+                        algoritmo_activo = "Dijkstra"
+                    else:
+                        algoritmo_activo = "A*"
+                    calcular_ambas_rutas()
+                elif rect_btn_exploracion.collidepoint(pos_raton):
+                    ver_exploracion = not ver_exploracion
+                elif rect_btn_anim.collidepoint(pos_raton):
+                    # Reinicia la simulación de exploración y vehículos
+                    if camino_ruta1:
+                        animando_busqueda = True
+                        progreso_animacion = 0.0
+                        vehiculo1.reiniciar([])
+                        vehiculo2.reiniciar([])
                 elif rect_btn_limpiar.collidepoint(pos_raton):
                     for mx in range(DIM_MANZANAS):
                         for my in range(DIM_MANZANAS):
